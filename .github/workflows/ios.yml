@@ -1,0 +1,75 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Download Unity Xcode project from Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          curl -sSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/ios-project" \
+            -o "$RUNNER_TEMP/rel.json"
+          ASSET_ID=$(python3 -c "import json,sys; d=json.load(open('$RUNNER_TEMP/rel.json')); print(d['assets'][0]['id'])")
+          echo "asset id = $ASSET_ID"
+          curl -sSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID" \
+            -o "$RUNNER_TEMP/project.tar.gz"
+          ls -lh "$RUNNER_TEMP/project.tar.gz"
+          mkdir -p "$RUNNER_TEMP/xcode"
+          tar -xzf "$RUNNER_TEMP/project.tar.gz" -C "$RUNNER_TEMP/xcode"
+          ls -la "$RUNNER_TEMP/xcode"
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build (no code signing)
+        working-directory: ${{ runner.temp }}/xcode/Unity-iPhone
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Unity-iPhone.xcodeproj \
+            -scheme Unity-iPhone \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            build 2>&1 | tee "$RUNNER_TEMP/build.log" | tail -n 80
+
+      - name: Package unsigned ipa
+        run: |
+          set -e
+          APP=$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" | head -n 1)
+          echo "app = $APP"
+          ls -la "$APP" | head
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          rm -f ARPlaneHole-unsigned.ipa
+          zip -qry ARPlaneHole-unsigned.ipa Payload
+          ls -lh ARPlaneHole-unsigned.ipa
+
+      - name: Upload ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARPlaneHole-unsigned-ipa
+          path: ${{ runner.temp }}/ARPlaneHole-unsigned.ipa
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
